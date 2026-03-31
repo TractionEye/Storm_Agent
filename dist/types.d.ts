@@ -49,15 +49,17 @@ export interface ClosePositionRequest {
     /** Amount to close in nanoTON (full margin for full close) */
     amount: number;
 }
-export interface OpenPositionResponse {
-    id: number;
-    error_code: number;
-    error: string;
-}
-export interface ClosePositionResponse {
-    status: 'pending' | 'error';
-    error_code: number;
-    error: string;
+export interface ExecuteResponse {
+    operation_id: string;
+    operation_status: string;
+    validation_outcome?: string;
+    failure_reason: string | null;
+    execution_result: {
+        deal_id?: number;
+        estimated_receive?: number;
+        offer_amount?: number;
+        swap_type?: string;
+    } | null;
 }
 export interface CreateOrderRequest {
     /** "takeProfit" or "stopLoss" */
@@ -126,6 +128,34 @@ export interface SwapStatus {
     tx_hash: string | null;
     error: string | null;
     error_code: number;
+}
+export interface PortfolioToken {
+    token_address: string;
+    symbol: string;
+    decimals: number;
+    quantity_nano?: string;
+    quantity?: string;
+    realized_pnl_ton: number;
+    unrealized_pnl_ton: number;
+    entry_price?: number;
+    current_value_ton?: number;
+}
+export interface PortfolioResponse {
+    total_realized_pnl_ton: number;
+    total_unrealized_pnl_ton: number;
+    tokens: PortfolioToken[];
+}
+export interface OperationResponse {
+    operation_id: string;
+    operation_status: 'pending' | 'confirmed' | 'failed' | 'adjusted';
+    failure_reason: string | null;
+    execution_result: {
+        swap_status?: string;
+        tx_hash?: string | null;
+        actual_token_amount?: number | null;
+        actual_ton_amount?: number | null;
+        deal_id?: number;
+    } | null;
 }
 export interface Market {
     pair: string;

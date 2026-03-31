@@ -50,6 +50,20 @@ export function createStormTools(client: StormClient): Tool[] {
     },
 
     {
+      name: 'storm_get_portfolio',
+      description:
+        'Get portfolio: total realized and unrealized PnL in TON, list of tokens with quantities, PnL per token, entry prices, and current values.',
+      parameters: { type: 'object', properties: {}, additionalProperties: false },
+      handler: async () => {
+        try {
+          return await client.getPortfolio();
+        } catch (err) {
+          return wrapError(err);
+        }
+      },
+    },
+
+    {
       name: 'storm_get_open_positions',
       description:
         'Get all open futures positions for the strategy. Returns a list of deals with direction (long/short), asset, leverage, margin, entry price, PnL, TP/SL prices, and swap status. Use this to see what positions are currently active before opening new ones.',
@@ -71,20 +85,6 @@ export function createStormTools(client: StormClient): Tool[] {
       handler: async () => {
         try {
           return await client.getAllDeals();
-        } catch (err) {
-          return wrapError(err);
-        }
-      },
-    },
-
-    {
-      name: 'storm_get_aggregated_positions',
-      description:
-        'Get positions grouped by token. Shows total amount, total TON invested, realized PnL, and entry price per asset. Useful for portfolio overview.',
-      parameters: { type: 'object', properties: {}, additionalProperties: false },
-      handler: async () => {
-        try {
-          return await client.getAggregatedPositions();
         } catch (err) {
           return wrapError(err);
         }
@@ -124,21 +124,21 @@ export function createStormTools(client: StormClient): Tool[] {
     },
 
     {
-      name: 'storm_get_swap_status',
+      name: 'storm_get_operation_status',
       description:
-        'Check the status of an async deal after opening or closing a position. Statuses: "pending" = waiting for on-chain settlement, "confirmed" = done, "failed" = error (check error field), "adjusted" = confirmed but amounts differ from expected.',
+        'Check the status of an async operation after opening or closing a position. Statuses: "pending" = waiting for on-chain settlement, "confirmed" = done, "failed" = error (check failure_reason). Use the operation_id returned by storm_open_position or storm_close_position.',
       parameters: {
         type: 'object',
         properties: {
-          deal_id: { type: 'number', description: 'The deal ID returned by open/close position' },
+          operation_id: { type: 'string', description: 'The operation ID returned by open/close position' },
         },
-        required: ['deal_id'],
+        required: ['operation_id'],
         additionalProperties: false,
       },
       handler: async (args) => {
         try {
-          const dealId = requireNumber(args, 'deal_id');
-          return await client.getSwapStatus(dealId);
+          const operationId = requireString(args, 'operation_id');
+          return await client.getOperationStatus(operationId);
         } catch (err) {
           return wrapError(err);
         }
@@ -150,7 +150,7 @@ export function createStormTools(client: StormClient): Tool[] {
     {
       name: 'storm_open_position',
       description:
-        'Open a new futures position on Storm Trade. Specify direction (long/short), pair (e.g. "BTC/USD"), leverage (2-100), and collateral amount in nanoTON (1 TON = 1,000,000,000 nanoTON). Optionally set stop_loss_price and take_profit_price in USD. Returns a deal ID — use storm_wait_confirmation to wait for on-chain settlement. UNITS: amount = collateral in nanoTON. stop_loss_price/take_profit_price = USD. limit_price/stop_trigger_price = nanoTON.',
+        'Open a new futures position on Storm Trade via /agent/execute. Specify direction (long/short), pair (e.g. "BTC/USD"), leverage (2-100), and collateral amount in nanoTON (1 TON = 1,000,000,000 nanoTON). Optionally set stop_loss_price and take_profit_price in USD. Returns { operation_id, operation_status } — pass operation_id to storm_wait_confirmation to wait for on-chain settlement. UNITS: amount = collateral in nanoTON. stop_loss_price/take_profit_price = USD. limit_price/stop_trigger_price = nanoTON.',
       parameters: {
         type: 'object',
         properties: {
@@ -204,7 +204,7 @@ export function createStormTools(client: StormClient): Tool[] {
     {
       name: 'storm_close_position',
       description:
-        'Close an existing futures position (fully or partially). Provide the deal ID and amount in nanoTON. For full close, use the full margin amount of the position. Returns status "pending" — use storm_wait_confirmation to wait for on-chain settlement.',
+        'Close an existing futures position (fully or partially) via /agent/execute. Provide the deal ID and amount in nanoTON. For full close, use the full margin amount of the position. Returns { operation_id, operation_status } — pass operation_id to storm_wait_confirmation.',
       parameters: {
         type: 'object',
         properties: {
@@ -229,7 +229,7 @@ export function createStormTools(client: StormClient): Tool[] {
     {
       name: 'storm_create_order',
       description:
-        'Create a Take Profit or Stop Loss order for an existing open position. Specify order_type ("takeProfit" or "stopLoss"), base asset (e.g. "BTC"), direction of the position, margin in nanoTON, order size in nanoTON, and trigger price in nanoTON. IMPORTANT: triggerPrice is in nanoTON, NOT USD.',
+        'Create a Take Profit or Stop Loss order for an existing open position via /agent/execute. Call AFTER storm_wait_confirmation confirms the position is open. Specify order_type ("takeProfit" or "stopLoss"), base asset (e.g. "BTC" — extract from pair like "BTC/USD"), direction of the position, margin in nanoTON, order size in nanoTON, and trigger price in nanoTON. IMPORTANT: triggerPrice is in nanoTON, NOT USD.',
       parameters: {
         type: 'object',
         properties: {
@@ -262,19 +262,19 @@ export function createStormTools(client: StormClient): Tool[] {
     {
       name: 'storm_wait_confirmation',
       description:
-        'Wait for a deal to be confirmed on-chain. Polls status every 3 seconds until the deal reaches a terminal state (confirmed/failed/adjusted) or times out after 120 seconds. Use after storm_open_position or storm_close_position. If you prefer manual polling, use storm_get_swap_status instead.',
+        'Wait for an operation to be confirmed on-chain. Polls status every 3 seconds until the operation reaches a terminal state (confirmed/failed/adjusted) or times out after 120 seconds. Use after storm_open_position or storm_close_position. If you prefer manual polling, use storm_get_operation_status instead.',
       parameters: {
         type: 'object',
         properties: {
-          deal_id: { type: 'number', description: 'Deal ID to wait for' },
+          operation_id: { type: 'string', description: 'Operation ID to wait for' },
         },
-        required: ['deal_id'],
+        required: ['operation_id'],
         additionalProperties: false,
       },
       handler: async (args) => {
         try {
-          const dealId = requireNumber(args, 'deal_id');
-          return await client.waitForConfirmation(dealId);
+          const operationId = requireString(args, 'operation_id');
+          return await client.waitForConfirmation(operationId);
         } catch (err) {
           return wrapError(err);
         }
