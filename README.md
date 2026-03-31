@@ -2,7 +2,7 @@
 
 **AI agent SDK for autonomous futures trading on Storm Trade DEX via TractionEye.**
 
-The Storm SDK gives AI agents everything needed to manage leveraged futures positions: open/close long and short positions, set Take Profit and Stop Loss orders, monitor deal lifecycle, and track strategy performance.
+The Storm SDK gives AI agents everything needed to manage leveraged futures positions: open/close long and short positions, set Take Profit and Stop Loss orders, monitor operation lifecycle, and track strategy performance.
 
 An agent becomes an autonomous futures strategy manager — opening positions with precise leverage, protecting them with TP/SL orders, and closing when conditions are met.
 
@@ -12,10 +12,10 @@ An agent becomes an autonomous futures strategy manager — opening positions wi
 
 | Feature | Description |
 |---------|-------------|
-| **11 agent tools** | Ready-to-use tool definitions for LLM agents (OpenClaw, LangChain, OpenAI, etc.) |
+| **12 agent tools** | Ready-to-use tool definitions for LLM agents (OpenClaw, LangChain, OpenAI, etc.) |
 | **Futures trading** | Long/short positions with 2–100x leverage on Storm Trade DEX |
 | **TP/SL orders** | Create Take Profit and Stop Loss orders for open positions |
-| **Deal lifecycle** | Full async lifecycle: open → poll → confirmed → close → poll → confirmed |
+| **Unified /agent/ API** | Same auth pattern as spot agent-kit — all requests via `/agent/*` endpoints |
 | **Input validation** | Leverage range, amount, direction, required fields — validated before API call |
 | **Retry with backoff** | Exponential backoff for transient errors (429, 502-504, network) |
 | **Error wrapping** | All tools return `{error, code}` on failure — LLM can reason about errors |
@@ -29,19 +29,17 @@ An agent becomes an autonomous futures strategy manager — opening positions wi
 ```
                 ┌─────────────────────────────────────────────┐
                 │     AI Agent (OpenClaw / LangChain / ...)   │
-                │     Uses 11 tools + trading skill           │
+                │     Uses 12 tools + trading skill           │
                 └──────────────────┬──────────────────────────┘
                                    │
                           ┌────────▼─────────┐
                           │   Storm SDK      │
                           │   StormClient    │
                           └────────┬─────────┘
-                                   │
+                                   │  Authorization: agent <token>
                           ┌────────▼─────────┐
-                          │  TractionEye     │
-                          │  Backend API     │
-                          │  (Storm Trade    │
-                          │   integration)   │
+                          │  /agent/*        │
+                          │  TractionEye API │
                           └────────┬─────────┘
                                    │
                           ┌────────▼─────────┐
@@ -84,56 +82,74 @@ const client = await StormClient.create({
   agentToken: 'your-agent-token',
 });
 
-// Get all 11 tools for your AI agent
+// Get all 12 tools for your AI agent
 const tools = createStormTools(client);
 ```
 
 ### 3. First trading session
 
 ```
-storm_get_strategy_info     → check balance, PnL, available capital
+storm_get_strategy_info        → check balance, PnL, available capital
   ↓
-storm_get_open_positions    → see current positions (avoid duplicates)
+storm_get_open_positions       → see current positions (avoid duplicates)
   ↓
-storm_get_available_markets → verify pair exists
+storm_get_available_markets    → verify pair exists
   ↓
-storm_open_position         → open long/short with leverage + TP/SL
+storm_open_position            → returns { operation_id, operation_status: "pending" }
   ↓
-storm_wait_confirmation     → wait for on-chain settlement
+storm_wait_confirmation        → pass operation_id, wait for "confirmed"
   ↓
-storm_create_order          → add TP/SL if not set at open time
+storm_create_order             → add TP/SL (AFTER position confirmed)
   ↓
-storm_close_position        → close when ready
+storm_close_position           → returns { operation_id }
   ↓
-storm_wait_confirmation     → wait for on-chain settlement
+storm_wait_confirmation        → wait for close to confirm
 ```
 
 ---
 
 ## Agent Tools
 
-`createStormTools(client)` returns **11 tools**. Each tool has a description that tells the agent when and how to use it.
+`createStormTools(client)` returns **12 tools**. Each tool has a description that tells the agent when and how to use it.
 
 ### Read tools (safe, no side effects)
 
 | Tool | Description |
 |------|-------------|
 | `storm_get_strategy_info` | Strategy summary: TON balance, daily/weekly/monthly/yearly PnL, win rate, max drawdown, low balance state. **Call first** to understand available capital. |
+| `storm_get_portfolio` | Portfolio overview: total realized/unrealized PnL in TON, token holdings with quantities and values. |
 | `storm_get_open_positions` | All open futures positions: direction, asset, leverage, margin, entry price, PnL, TP/SL prices, swap status. **Call before opening** new positions. |
 | `storm_get_all_deals` | Full trade history including closed deals. Use to analyze past performance and calculate cumulative PnL. |
-| `storm_get_aggregated_positions` | Positions grouped by token: total amount, total TON invested, realized PnL, entry price per asset. Portfolio overview. |
 | `storm_get_orders` | TP/SL order history with pagination: trigger prices, sizes, statuses, directions. Check before creating orders to avoid duplicates. |
 | `storm_get_available_markets` | Supported trading pairs with settlement token and type. Verify pair exists before opening. |
-| `storm_get_swap_status` | Check async deal status: pending → confirmed / failed / adjusted. Use for manual polling. |
+| `storm_get_operation_status` | Check async operation status: pending → confirmed / failed / adjusted. Use for manual polling with `operation_id`. |
 
 ### Write tools (execute trades)
 
 | Tool | Description |
 |------|-------------|
-| `storm_open_position` | Open long/short with leverage (2–100x). Set collateral in nanoTON, optional TP/SL in USD. Returns deal ID for confirmation polling. |
-| `storm_close_position` | Close position fully or partially. Amount in nanoTON. Returns "pending" status. |
-| `storm_create_order` | Set Take Profit or Stop Loss on existing position. Trigger price in nanoTON. |
-| `storm_wait_confirmation` | Block until deal is confirmed on-chain (polls every 3s, timeout 120s). Handles transient network errors. |
+| `storm_open_position` | Open long/short with leverage (2–100x). Set collateral in nanoTON, optional TP/SL in USD. Returns `{ operation_id }` for confirmation. |
+| `storm_close_position` | Close position fully or partially. Amount in nanoTON. Returns `{ operation_id }`. |
+| `storm_create_order` | Set Take Profit or Stop Loss on existing position. Call AFTER position is confirmed open. Trigger price in nanoTON. |
+| `storm_wait_confirmation` | Wait until operation is confirmed on-chain (polls every 3s, timeout 120s). Pass `operation_id` from open/close. |
+
+---
+
+## API Endpoints Used
+
+All requests go through `/agent/*` endpoints with `Authorization: agent <token>` — same auth pattern as the spot agent-kit.
+
+| SDK Method | Endpoint | Method |
+|------------|----------|--------|
+| `getStrategyInfo()` | `/agent/strategy` | GET |
+| `getPortfolio()` | `/agent/portfolio` | GET |
+| `openPosition()` | `/agent/execute` | POST |
+| `closePosition()` | `/agent/execute` | POST |
+| `createOrder()` | `/agent/execute` | POST |
+| `getOpenDeals()` | `/agent/execute` | POST |
+| `getAllDeals()` | `/agent/execute` | POST |
+| `getOrders()` | `/agent/execute` | POST |
+| `getOperationStatus()` | `/agent/operation/{id}` | GET |
 
 ---
 
@@ -147,7 +163,6 @@ The SDK uses two different price units. Confusing them will cause incorrect orde
 | `limit_price`, `stop_trigger_price`, `triggerPrice` | **nanoTON** | `100000000000` |
 | `entry_price`, `stop_loss_price`, `take_profit_price` | **USD** | `87150.5` |
 | `leverage` | multiplier | `3.0` = 3x |
-| `profit_or_loss` | nanoTON | `150000000` = 0.15 TON |
 
 **1 TON = 1,000,000,000 nanoTON**
 
@@ -155,22 +170,23 @@ The SDK uses two different price units. Confusing them will cause incorrect orde
 
 ---
 
-## Deal Lifecycle
+## Operation Lifecycle
 
-Storm Trade positions are asynchronous — they go through on-chain settlement:
+All write operations (`openPosition`, `closePosition`, `createOrder`) return a unified response:
 
+```ts
+{
+  operation_id: "abc-123",        // use this to poll status
+  operation_status: "pending",    // pending → confirmed | failed | adjusted
+  failure_reason: null,
+  execution_result: {
+    deal_id: 742,                 // deal ID for reference
+    ...
+  }
+}
 ```
-1. POST /deal/open      → deal created, swap_status = "pending"
-2. GET  /swap/status/id  → poll: "pending" → "confirmed"
-3. [position is open, trading on Storm Trade]
-4. POST /deal/close     → close order sent, status = "pending"
-5. GET  /swap/status/id  → poll: "pending" → "confirmed"
-6. [position closed, PnL calculated]
-```
 
-### Automatic events (handled by backend)
-- **TP/SL triggered** — `storm_processor` monitors Storm sequencer events, auto-closes deal
-- **Liquidation** — deal closed automatically when margin is insufficient
+Settlement is asynchronous (on-chain). Poll with `storm_wait_confirmation(operation_id)` or `storm_get_operation_status(operation_id)`.
 
 ---
 
@@ -187,7 +203,7 @@ Storm Trade positions are asynchronous — they go through on-chain settlement:
 | ETH/USDT | USDT | base | Ethereum with USDT margin |
 | TON/USDT | USDT | base | Toncoin with USDT margin |
 
-> Storm Trade may add new markets over time. The SDK's hardcoded list may not include all pairs.
+> Storm Trade may add new markets over time. The SDK's list may not include all pairs.
 
 ---
 
@@ -196,16 +212,14 @@ Storm Trade positions are asynchronous — they go through on-chain settlement:
 ### Open a 3x long BTC with 1 TON, SL at $80k, TP at $100k
 
 ```ts
-// Step 1: Check balance
 const info = await client.getStrategyInfo();
 console.log('Available:', info.ton_in_strategy, 'nanoTON');
 
-// Step 2: Check existing positions
 const positions = await client.getOpenDeals();
 console.log('Open positions:', positions.length);
 
-// Step 3: Open position
-const deal = await client.openPosition({
+// Open position
+const result = await client.openPosition({
   direction: 'long',
   pair: 'BTC/USD',
   leverage: 3,
@@ -215,11 +229,12 @@ const deal = await client.openPosition({
   stop_loss_price: 80000,       // USD
   take_profit_price: 100000,    // USD
 });
-console.log('Deal ID:', deal.id);
+console.log('Operation ID:', result.operation_id);
 
-// Step 4: Wait for confirmation
-const status = await client.waitForConfirmation(deal.id);
-console.log('Status:', status.status); // "confirmed"
+// Wait for on-chain confirmation
+const status = await client.waitForConfirmation(result.operation_id);
+console.log('Status:', status.operation_status); // "confirmed"
+console.log('Deal ID:', status.execution_result?.deal_id);
 ```
 
 ### Close 50% of a position
@@ -228,22 +243,22 @@ console.log('Status:', status.status); // "confirmed"
 const positions = await client.getOpenDeals();
 const position = positions[0];
 
-// Close half
 const result = await client.closePosition({
   id: position.id,
   amount: Math.floor(position.margin / 2),
 });
 
-const status = await client.waitForConfirmation(position.id);
-console.log('Closed:', status.status);
+const status = await client.waitForConfirmation(result.operation_id);
+console.log('Closed:', status.operation_status);
 ```
 
 ### Set TP/SL order on existing position
 
 ```ts
-await client.createOrder({
+// Call AFTER position is confirmed open
+const result = await client.createOrder({
   order_type: 'takeProfit',
-  baseAsset: 'BTC',
+  baseAsset: 'BTC',             // extract from pair "BTC/USD"
   direction: 'long',
   marginIn: 1_000_000_000,
   amount: 1_000_000_000,
@@ -259,12 +274,12 @@ All tool handlers return structured errors instead of throwing:
 
 ```ts
 // Successful response
-{ id: 742, error_code: 200, error: "" }
+{ operation_id: "abc-123", operation_status: "pending", ... }
 
 // Error response from tool handler
-{ error: "HTTP 400 for POST /strategy/365/deal/open", code: 400 }
+{ error: "HTTP 400 for POST /agent/execute", code: 400 }
 { error: "leverage must be 2–100, got 200" }
-{ error: "Deal 999 not found" }
+{ error: "Operation abc-123 not found" }
 ```
 
 ### Error codes
@@ -276,12 +291,6 @@ All tool handlers return structured errors instead of throwing:
 | 404 | Strategy or deal not found |
 | 409 | Conflict (no open position to close) |
 | 500 | Internal error |
-
-### Error recovery
-
-- **Timeout on confirmation** → Call `storm_get_swap_status` manually. If "failed", check error field. Do NOT blindly retry.
-- **409 Conflict** → No open position to close. Call `storm_get_open_positions` to verify.
-- **400 Bad Request** → Invalid parameters. Check leverage (2-100), amount > 0, pair exists.
 
 ---
 
@@ -315,7 +324,7 @@ async function handleToolCall(name: string, args: Record<string, unknown>) {
 
 ### Using with spot trading agent-kit
 
-The Storm SDK can be used alongside `@tractioneye/agent-sdk` (spot trading). Both use the same agent token format and TractionEye backend. Create separate clients for each:
+The Storm SDK can be used alongside `@tractioneye/agent-sdk` (spot trading). Both use the same agent token format and `/agent/*` API. Create separate clients for each:
 
 ```ts
 import { TractionEyeClient, createTractionEyeTools } from '@tractioneye/agent-sdk';
@@ -335,19 +344,6 @@ const allTools = [...spotTools, ...futuresTools];
 
 ---
 
-## Trading Skill
-
-The SDK includes `skills/storm-trading.md` — a behavioral specification for AI futures trading agents:
-
-- **Decision flowchart**: check balance → check positions → verify pair → open → confirm → set TP/SL
-- **Unit reference**: critical USD vs nanoTON distinction
-- **Example workflows**: open position, partial close, error recovery
-- **7 safety rules**: balance check, position check, pair verification, confirmation wait, no opposing positions, TP/SL requirement, risk limits
-
-Designed for [OpenClaw](https://openclaw.com) agents. Compatible with any LLM agent framework that supports function calling.
-
----
-
 ## HTTP Client Features
 
 | Feature | Details |
@@ -357,6 +353,19 @@ Designed for [OpenClaw](https://openclaw.com) agents. Compatible with any LLM ag
 | **Retry** | 3 retries with exponential backoff (1s, 2s, 4s) for 429/502/503/504 and network errors |
 | **JSON validation** | Rejects empty and non-JSON responses (no silent `{}`) |
 | **Logging** | All methods logged with `[storm-sdk <timestamp>]` prefix |
+
+---
+
+## Trading Skill
+
+The SDK includes `skills/storm-trading.md` — a behavioral specification for AI futures trading agents:
+
+- **Decision flowchart**: check balance → check positions → verify pair → open → confirm → set TP/SL
+- **Unit reference**: critical USD vs nanoTON distinction
+- **Example workflows**: open position, partial close, set TP/SL, error recovery
+- **8 safety rules**: balance check, position check, pair verification, confirmation wait, no opposing positions, TP/SL requirement, risk limits, baseAsset extraction
+
+Designed for [OpenClaw](https://openclaw.com) agents. Compatible with any LLM agent framework that supports function calling.
 
 ---
 
